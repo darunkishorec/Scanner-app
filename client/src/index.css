@@ -1,0 +1,79 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@700;800&family=Inter:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #0F1117;
+  --bg-surface: #161820;
+  --bg-elevated: #1C1F2A;
+  --amber: #F59E0B;
+  --amber-dim: #B45309;
+  --text: #E8E6E1;
+  --text-muted: #6B7280;
+  --error-bg: #7F1D1D;
+  --error-text: #FCA5A5;
+  --red-flash: rgba(239, 68, 68, 0.15);
+  --radius: 4px;
+  --radius-md: 6px;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+input, button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  outline: none;
+}
+
+input {
+  outline: none;
+  border: none;
+  background: none;
+}
+
+/* Custom scrollbar for logs panel */
+.logs-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.logs-panel::-webkit-scrollbar-track {
+  background: #1f2937;
+}
+
+.logs-panel::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 4px;
+}
+
+.logs-panel::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+/* Admin panel specific styles */
+.admin-body {
+  overflow: auto;
+  height: 100vh;
+  background: #f8fafc;
+}
