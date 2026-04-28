@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Users, Clock, CheckCircle } from 'lucide-react';
 import styles from './QueueScreen.module.css';
+import { getApiUrl } from '../utils/api';
 
 export default function QueueScreen({ queueId, customerName, onCartReady }) {
   const [queueData, setQueueData] = useState(null);
@@ -10,7 +11,7 @@ export default function QueueScreen({ queueId, customerName, onCartReady }) {
     // Poll queue status every 3 seconds
     const checkQueueStatus = async () => {
       try {
-        const response = await fetch(`/api/queue/status/${queueId}`);
+        const response = await fetch(getApiUrl(`/api/queue/status/${queueId}`));
         if (response.ok) {
           const data = await response.json();
           setQueueData(data);

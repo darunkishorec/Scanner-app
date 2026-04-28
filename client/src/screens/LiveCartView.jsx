@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ShoppingCart, Package, IndianRupee } from 'lucide-react';
 import styles from './LiveCartView.module.css';
+import { getApiUrl } from '../utils/api';
 
 export default function LiveCartView({ cartId, customerName }) {
   const [cartData, setCartData] = useState(null);
@@ -18,7 +19,7 @@ export default function LiveCartView({ cartId, customerName }) {
     const pollCartStatus = async () => {
       try {
         console.log('[LiveCartView] Polling cart status...');
-        const response = await fetch(`/api/cart/status/${cartId}`);
+        const response = await fetch(getApiUrl(`/api/cart/status/${cartId}`));
         if (response.ok) {
           const data = await response.json();
           console.log('[LiveCartView] Received cart data:', data);
@@ -36,7 +37,7 @@ export default function LiveCartView({ cartId, customerName }) {
     pollCartStatus();
     
     // Try SSE connection
-    const eventSource = new EventSource(`/api/sse/cart-status/${cartId}`);
+    const eventSource = new EventSource(getApiUrl(`/api/sse/cart-status/${cartId}`));
     eventSourceRef.current = eventSource;
 
     eventSource.onopen = () => {

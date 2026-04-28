@@ -6,12 +6,13 @@ import ManualEntryDrawer from '../components/ManualEntryDrawer';
 import StatusOverlay from '../components/StatusOverlay';
 import styles from './ScannerScreen.module.css';
 import successSound from '../assets/Connection_Success.mp3';
+import { getApiUrl } from '../utils/api';
 
 const ERROR_MESSAGES = {
   CART_NOT_FOUND: "This QR code isn't a valid cart",
   CART_IN_USE: (id) => `Cart ${id} is already occupied`,
   INVALID_FORMAT: "QR code doesn't match cart format",
-  NETWORK: 'Server not running. Start the backend on port 3001.',
+  NETWORK: 'Cannot connect to server. Check your connection.',
 };
 
 export default function ScannerScreen({ user, onSuccess, onQueue, onExit }) {
@@ -71,7 +72,7 @@ export default function ScannerScreen({ user, onSuccess, onQueue, onExit }) {
 
     try {
       const { name, phone } = userRef.current;
-      const res = await fetch('/api/validate-cart', {
+      const res = await fetch(getApiUrl('/api/validate-cart'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cartId, name, phone }),
@@ -86,7 +87,7 @@ export default function ScannerScreen({ user, onSuccess, onQueue, onExit }) {
           console.log('[Scanner] All carts occupied, joining queue');
           
           // Join queue
-          const queueRes = await fetch('/api/queue/join', {
+          const queueRes = await fetch(getApiUrl('/api/queue/join'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ customerName: name, customerPhone: phone }),
