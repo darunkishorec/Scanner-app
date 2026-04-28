@@ -459,6 +459,44 @@ async def checkout(req: CheckoutRequest = None):
 
     await log_event("INFO", f"Checkout completed for {cart_id} - Total: ₹{session.get('total', 0)}", cart_id)
 
+    # Auto-reset cart to waiting status after 5 seconds for next customer
+    async def reset_cart_after_delay():
+        await asyncio.sleep(5)
+        try:
+            # Create fresh waiting session
+            reset_time = now_utc()
+            token = generate_token()
+            expires_at = reset_time + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
+            
+            new_session = {
+                "cartId": cart_id,
+                "token": token,
+                "storeId": STORE_ID,
+                "status": "waiting",
+                "customerName": None,
+                "customerPhone": None,
+                "expiresAt": expires_at,
+                "items": [],
+                "total": 0.0,
+                "createdAt": reset_time,
+                "connectedAt": None,
+                "lastUpdated": reset_time,
+                "statusHistory": [{"status": "waiting", "timestamp": reset_time}]
+            }
+            
+            # Replace the checked-out session with waiting session
+            await db.cart_sessions.replace_one(
+                {"cartId": cart_id, "status": "checked-out"},
+                new_session
+            )
+            
+            await log_event("INFO", f"Cart {cart_id} auto-reset to waiting after checkout", cart_id)
+        except Exception as e:
+            print(f"Error auto-resetting cart {cart_id}: {e}")
+    
+    # Start the reset task in background
+    asyncio.create_task(reset_cart_after_delay())
+
     return {"success": True, "cartId": cart_id}
 
 
