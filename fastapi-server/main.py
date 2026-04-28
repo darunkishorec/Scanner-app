@@ -422,13 +422,23 @@ async def remove_item(req: RemoveItemRequest):
 
 
 @app.post("/api/cart/checkout")
-async def checkout(req: CheckoutRequest):
+async def checkout(req: CheckoutRequest = None):
     """
     Called by the POS on checkout.
     Scanner app polling detects status='checked-out' and shows thank-you screen.
     """
-    # Normalize cart ID to uppercase
-    cart_id = req.cartId.upper()
+    # Handle both POS system calls (no body) and Scanner app calls (with cartId)
+    if req and hasattr(req, 'cartId'):
+        cart_id = req.cartId.upper()
+    else:
+        # POS system call - get the active cart
+        session = await db.cart_sessions.find_one(
+            {"status": "active"},
+            sort=[("connectedAt", -1)]
+        )
+        if not session:
+            raise HTTPException(status_code=404, detail="No active session to check out.")
+        cart_id = session["cartId"]
     
     session = await db.cart_sessions.find_one({"cartId": cart_id, "status": "active"})
     if not session:
@@ -562,7 +572,563 @@ async def list_carts():
     return [session_to_dict(d) for d in docs]
 
 
-# ── Admin Endpoints ───────────────────────────────────────────────────────────
+# ── POS System Endpoints (Additional endpoints for POS compatibility) ──────
+
+@app.get("/api/cart")
+async def get_cart():
+    """
+    Get current cart for POS system.
+    Returns the active cart session.
+    """
+    # Get customer info from session (this would normally come from authentication)
+    # For now, we'll get the most recent active cart
+    session = await db.cart_sessions.find_one(
+        {"status": "active"},
+        sort=[("connectedAt", -1)]
+    )
+    
+    if not session:
+        # Return empty cart structure
+        return {
+            "success": True,
+            "data": {
+                "_id": "empty",
+                "items": [],
+                "customerId": None,
+                "orderNumber": "EMPTY-001",
+                "status": "empty",
+                "createdAt": now_utc().isoformat(),
+                "updatedAt": now_utc().isoformat()
+            }
+        }
+    
+    # Convert FastAPI cart format to POS expected format
+    cart_data = {
+        "_id": str(session.get("_id", "cart-001")),
+        "items": [
+            {
+                "productId": {
+                    "_id": f"prod-{i}",
+                    "name": item["name"],
+                    "price": item["price"],
+                    "barcode": f"BAR{i:06d}",
+                    "image": "https://via.placeholder.com/150",
+                    "category": "General",
+                    "stock": 100,
+                    "createdAt": now_utc().isoformat()
+                },
+                "quantity": item["qty"],
+                "addedAt": now_utc().isoformat(),
+                "_id": f"item-{i}"
+            }
+            for i, item in enumerate(session.get("items", []))
+        ],
+        "customerId": session.get("customerName"),
+        "orderNumber": session.get("cartId", "ORDER-001"),
+        "status": session.get("status", "active"),
+        "createdAt": session.get("createdAt", now_utc()).isoformat() if isinstance(session.get("createdAt"), datetime) else session.get("createdAt", now_utc().isoformat()),
+        "updatedAt": session.get("lastUpdated", now_utc()).isoformat() if isinstance(session.get("lastUpdated"), datetime) else session.get("lastUpdated", now_utc().isoformat())
+    }
+    
+    return {"success": True, "data": cart_data}
+
+
+class POSAddToCartRequest(BaseModel):
+    productId: str
+    quantity: int = 1
+
+
+@app.post("/api/cart/add")
+async def pos_add_to_cart(req: POSAddToCartRequest):
+    """
+    Add product to cart for POS system.
+    This is a compatibility endpoint that maps to the existing add-item functionality.
+    """
+    # Get the active cart session
+    session = await db.cart_sessions.find_one(
+        {"status": "active"},
+        sort=[("connectedAt", -1)]
+    )
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="No active cart session found")
+    
+    cart_id = session["cartId"]
+    
+    # For demo purposes, create a mock product based on productId
+    # In a real system, you'd fetch this from a products database
+    mock_products = {
+        "prod-0": {"name": "Apple", "price": 2.50},
+        "prod-1": {"name": "Banana", "price": 1.25},
+        "prod-2": {"name": "Orange", "price": 3.00},
+        "prod-3": {"name": "Milk", "price": 4.50},
+        "prod-4": {"name": "Bread", "price": 2.75}
+    }
+    
+    product = mock_products.get(req.productId, {"name": "Unknown Product", "price": 5.00})
+    
+    # Add item using existing add-item logic
+    new_item = {"name": product["name"], "price": product["price"], "qty": req.quantity}
+    items = session.get("items", [])
+
+    # Merge with existing item if same name
+    existing = next((i for i in items if i["name"] == product["name"]), None)
+    if existing:
+        existing["qty"] += req.quantity
+    else:
+        items.append(new_item)
+
+    total = sum(i["price"] * i["qty"] for i in items)
+    last_updated = now_utc()
+
+    await db.cart_sessions.update_one(
+        {"cartId": cart_id, "status": "active"},
+        {"$set": {"items": items, "total": round(total, 2), "lastUpdated": last_updated}},
+    )
+
+    await log_event("INFO", f"POS: Item {product['name']} added to {cart_id}", cart_id)
+
+    # Return in POS expected format
+    return await get_cart()
+
+
+class POSUpdateCartRequest(BaseModel):
+    productId: str
+    quantity: int
+
+
+@app.post("/api/cart/update")
+async def pos_update_cart_item(req: POSUpdateCartRequest):
+    """
+    Update cart item quantity for POS system.
+    """
+    session = await db.cart_sessions.find_one(
+        {"status": "active"},
+        sort=[("connectedAt", -1)]
+    )
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="No active cart session found")
+    
+    cart_id = session["cartId"]
+    
+    # Map productId to product name (simplified for demo)
+    mock_products = {
+        "prod-0": "Apple",
+        "prod-1": "Banana", 
+        "prod-2": "Orange",
+        "prod-3": "Milk",
+        "prod-4": "Bread"
+    }
+    
+    product_name = mock_products.get(req.productId, "Unknown Product")
+    
+    items = session.get("items", [])
+    
+    # Find item by name
+    existing = next((i for i in items if i["name"] == product_name), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Item {product_name} not found in cart.")
+    
+    # Update quantity
+    if req.quantity <= 0:
+        # Remove item if quantity is 0 or negative
+        items = [i for i in items if i["name"] != product_name]
+        await log_event("INFO", f"POS: Item {product_name} removed from {cart_id} (qty set to {req.quantity})", cart_id)
+    else:
+        existing["qty"] = req.quantity
+        await log_event("INFO", f"POS: Item {product_name} quantity updated to {req.quantity} in {cart_id}", cart_id)
+
+    total = sum(i["price"] * i["qty"] for i in items)
+    last_updated = now_utc()
+
+    await db.cart_sessions.update_one(
+        {"cartId": cart_id, "status": "active"},
+        {"$set": {"items": items, "total": round(total, 2), "lastUpdated": last_updated}},
+    )
+
+    return await get_cart()
+
+
+@app.delete("/api/cart/item/{product_id}")
+async def pos_remove_cart_item(product_id: str):
+    """
+    Remove item from cart for POS system.
+    """
+    session = await db.cart_sessions.find_one(
+        {"status": "active"},
+        sort=[("connectedAt", -1)]
+    )
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="No active cart session found")
+    
+    cart_id = session["cartId"]
+    
+    # Map productId to product name
+    mock_products = {
+        "prod-0": "Apple",
+        "prod-1": "Banana",
+        "prod-2": "Orange", 
+        "prod-3": "Milk",
+        "prod-4": "Bread"
+    }
+    
+    product_name = mock_products.get(product_id, "Unknown Product")
+    
+    items = session.get("items", [])
+    
+    # Find and remove item by name
+    original_length = len(items)
+    items = [i for i in items if i["name"] != product_name]
+    
+    if len(items) == original_length:
+        raise HTTPException(status_code=404, detail=f"Item {product_name} not found in cart.")
+
+    total = sum(i["price"] * i["qty"] for i in items)
+    last_updated = now_utc()
+
+    await db.cart_sessions.update_one(
+        {"cartId": cart_id, "status": "active"},
+        {"$set": {"items": items, "total": round(total, 2), "lastUpdated": last_updated}},
+    )
+
+    await log_event("INFO", f"POS: Item {product_name} removed from {cart_id}", cart_id)
+
+    return await get_cart()
+
+
+# Mock products endpoint for POS system
+@app.get("/api/products")
+async def get_products():
+    """
+    Mock products endpoint for POS system compatibility.
+    """
+    mock_products = [
+        {
+            "_id": "prod-0",
+            "name": "Apple",
+            "price": 2.50,
+            "barcode": "BAR000001",
+            "image": "https://via.placeholder.com/150",
+            "category": "Fruits",
+            "stock": 100,
+            "createdAt": now_utc().isoformat()
+        },
+        {
+            "_id": "prod-1", 
+            "name": "Banana",
+            "price": 1.25,
+            "barcode": "BAR000002",
+            "image": "https://via.placeholder.com/150",
+            "category": "Fruits",
+            "stock": 150,
+            "createdAt": now_utc().isoformat()
+        },
+        {
+            "_id": "prod-2",
+            "name": "Orange", 
+            "price": 3.00,
+            "barcode": "BAR000003",
+            "image": "https://via.placeholder.com/150",
+            "category": "Fruits",
+            "stock": 80,
+            "createdAt": now_utc().isoformat()
+        },
+        {
+            "_id": "prod-3",
+            "name": "Milk",
+            "price": 4.50,
+            "barcode": "BAR000004", 
+            "image": "https://via.placeholder.com/150",
+            "category": "Dairy",
+            "stock": 50,
+            "createdAt": now_utc().isoformat()
+        },
+        {
+            "_id": "prod-4",
+            "name": "Bread",
+            "price": 2.75,
+            "barcode": "BAR000005",
+            "image": "https://via.placeholder.com/150", 
+            "category": "Bakery",
+            "stock": 30,
+            "createdAt": now_utc().isoformat()
+        }
+    ]
+    
+    return {"success": True, "data": mock_products}
+
+
+@app.get("/api/products/barcode/{barcode}")
+async def get_product_by_barcode(barcode: str):
+    """
+    Get product by barcode for POS system.
+    """
+    # Mock barcode to product mapping
+    barcode_map = {
+        "BAR000001": "prod-0",
+        "BAR000002": "prod-1", 
+        "BAR000003": "prod-2",
+        "BAR000004": "prod-3",
+        "BAR000005": "prod-4"
+    }
+    
+    product_id = barcode_map.get(barcode)
+    if not product_id:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    products_response = await get_products()
+    products = products_response["data"]
+    
+    product = next((p for p in products if p["_id"] == product_id), None)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    return {"success": True, "data": product}
+
+
+@app.post("/api/cart/scan-barcode")
+async def pos_scan_barcode(request: dict):
+    """
+    Scan barcode and add to cart for POS system.
+    """
+    barcode = request.get("barcode")
+    if not barcode:
+        raise HTTPException(status_code=400, detail="Barcode is required")
+    
+    try:
+        # Get product by barcode
+        product_response = await get_product_by_barcode(barcode)
+        product = product_response["data"]
+        
+        # Add to cart
+        add_request = POSAddToCartRequest(productId=product["_id"], quantity=1)
+        return await pos_add_to_cart(add_request)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Mock scan history endpoint
+@app.get("/api/scan-history")
+async def get_scan_history(limit: int = 50):
+    """
+    Mock scan history for POS system.
+    """
+    # Get recent cart activities as scan history
+    sessions = await db.cart_sessions.find(
+        {"items": {"$ne": []}},
+        sort=[("lastUpdated", -1)]
+    ).limit(limit).to_list(limit)
+    
+    scan_history = []
+    for session in sessions:
+        for i, item in enumerate(session.get("items", [])):
+            scan_history.append({
+                "_id": f"scan-{session['cartId']}-{i}",
+                "productId": {
+                    "_id": f"prod-{i}",
+                    "name": item["name"],
+                    "price": item["price"],
+                    "barcode": f"BAR{i:06d}",
+                    "image": "https://via.placeholder.com/150",
+                    "category": "General",
+                    "stock": 100,
+                    "createdAt": session.get("createdAt", now_utc()).isoformat() if isinstance(session.get("createdAt"), datetime) else session.get("createdAt", now_utc().isoformat())
+                },
+                "barcode": f"BAR{i:06d}",
+                "quantity": item["qty"],
+                "scannedAt": session.get("lastUpdated", now_utc()).isoformat() if isinstance(session.get("lastUpdated"), datetime) else session.get("lastUpdated", now_utc().isoformat())
+            })
+    
+    return {"success": True, "data": scan_history}
+
+
+# Mock customer endpoints
+@app.get("/api/customers/search")
+async def search_customers(phone: str = None, q: str = None):
+    """
+    Mock customer search for POS system.
+    """
+    # Return mock customer data
+    mock_customer = {
+        "_id": "customer-001",
+        "name": "John Doe",
+        "phone": phone or "1234567890",
+        "email": "john@example.com",
+        "memberId": "MEMBER001",
+        "loyaltyPoints": 150,
+        "createdAt": now_utc().isoformat()
+    }
+    
+    return {"success": True, "data": mock_customer}
+
+
+@app.get("/api/customers/member/{member_id}")
+async def get_customer_by_member_id(member_id: str):
+    """
+    Mock get customer by member ID.
+    """
+    mock_customer = {
+        "_id": "customer-001",
+        "name": "John Doe",
+        "phone": "1234567890",
+        "email": "john@example.com", 
+        "memberId": member_id,
+        "loyaltyPoints": 150,
+        "createdAt": now_utc().isoformat()
+    }
+    
+    return {"success": True, "data": mock_customer}
+
+
+@app.post("/api/customers/create")
+async def create_customer(customer_data: dict):
+    """
+    Mock create customer.
+    """
+    mock_customer = {
+        "_id": f"customer-{int(time.time())}",
+        "name": customer_data.get("name", "New Customer"),
+        "phone": customer_data.get("phone", "0000000000"),
+        "email": customer_data.get("email", ""),
+        "memberId": f"MEMBER{int(time.time())}",
+        "loyaltyPoints": 0,
+        "createdAt": now_utc().isoformat()
+    }
+    
+    return {"success": True, "data": mock_customer}
+
+
+@app.post("/api/products/update-stock")
+async def update_product_stock(stock_data: dict):
+    """
+    Mock update product stock after checkout.
+    """
+    updates = stock_data.get("updates", [])
+    await log_event("INFO", f"Stock updated for {len(updates)} products", admin_action=True)
+    
+    return {"success": True, "message": f"Stock updated for {len(updates)} products"}
+
+
+# Mock products endpoint for POS system
+@app.get("/api/products")
+async def get_products():
+    """
+    Mock products endpoint for POS system compatibility.
+    """
+    mock_products = [
+        {
+            "_id": "prod-0",
+            "name": "Apple",
+            "price": 2.50,
+            "barcode": "BAR000001",
+            "image": "https://via.placeholder.com/150",
+            "category": "Fruits",
+            "stock": 100,
+            "createdAt": now_utc().isoformat()
+        },
+        {
+            "_id": "prod-1", 
+            "name": "Banana",
+            "price": 1.25,
+            "barcode": "BAR000002",
+            "image": "https://via.placeholder.com/150",
+            "category": "Fruits",
+            "stock": 150,
+            "createdAt": now_utc().isoformat()
+        },
+        {
+            "_id": "prod-2",
+            "name": "Orange", 
+            "price": 3.00,
+            "barcode": "BAR000003",
+            "image": "https://via.placeholder.com/150",
+            "category": "Fruits",
+            "stock": 80,
+            "createdAt": now_utc().isoformat()
+        },
+        {
+            "_id": "prod-3",
+            "name": "Milk",
+            "price": 4.50,
+            "barcode": "BAR000004", 
+            "image": "https://via.placeholder.com/150",
+            "category": "Dairy",
+            "stock": 50,
+            "createdAt": now_utc().isoformat()
+        },
+        {
+            "_id": "prod-4",
+            "name": "Bread",
+            "price": 2.75,
+            "barcode": "BAR000005",
+            "image": "https://via.placeholder.com/150", 
+            "category": "Bakery",
+            "stock": 30,
+            "createdAt": now_utc().isoformat()
+        }
+    ]
+    
+    return {"success": True, "data": mock_products}
+
+
+@app.get("/api/products/barcode/{barcode}")
+async def get_product_by_barcode(barcode: str):
+    """
+    Get product by barcode for POS system.
+    """
+    # Mock barcode to product mapping
+    barcode_map = {
+        "BAR000001": "prod-0",
+        "BAR000002": "prod-1", 
+        "BAR000003": "prod-2",
+        "BAR000004": "prod-3",
+        "BAR000005": "prod-4"
+    }
+    
+    product_id = barcode_map.get(barcode)
+    if not product_id:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    products_response = await get_products()
+    products = products_response["data"]
+    
+    product = next((p for p in products if p["_id"] == product_id), None)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    return {"success": True, "data": product}
+
+
+@app.post("/api/cart/scan-barcode")
+async def pos_scan_barcode(request: dict):
+    """
+    Scan barcode and add to cart for POS system.
+    """
+    barcode = request.get("barcode")
+    if not barcode:
+        raise HTTPException(status_code=400, detail="Barcode is required")
+    
+    try:
+        # Get product by barcode
+        product_response = await get_product_by_barcode(barcode)
+        product = product_response["data"]
+        
+        # Add to cart
+        add_request = POSAddToCartRequest(productId=product["_id"], quantity=1)
+        return await pos_add_to_cart(add_request)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── End POS System Endpoints ──────────────────────────────────────────────────
 
 @app.get("/api/admin/carts")
 async def admin_list_carts():
